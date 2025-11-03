@@ -2,8 +2,9 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../shared/schema';
 
-const connectionString = process.env.DATABASE_URL ||
-  `postgresql://postgres.xuwpnyegbcaockhherfz:${process.env.DB_PASSWORD || 'postgres'}@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres`;
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is not defined in environment variables');
+}
 
-const client = postgres(connectionString);
+const client = postgres(process.env.DATABASE_URL);
 export const db = drizzle(client, { schema });
