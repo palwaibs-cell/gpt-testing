@@ -1,8 +1,6 @@
 import { z } from 'zod';
 import { publicProcedure, router } from '../trpc';
-import { db } from '../db';
-import { users, orders, packages, cookies, promoCodes, ratings } from '../../shared/schema';
-import { eq } from 'drizzle-orm';
+import { supabase } from '../supabase';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
@@ -29,13 +27,13 @@ export const adminRouter = router({
       })
     )
     .mutation(async ({ input }) => {
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.email, input.email))
-        .limit(1);
+      const { data: user, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', input.email)
+        .single();
 
-      if (!user) {
+      if (error || !user) {
         throw new Error('Email atau password salah');
       }
 
@@ -57,7 +55,30 @@ export const adminRouter = router({
     .input(z.object({ token: z.string() }))
     .query(async ({ input }) => {
       verifyAdminToken(input.token);
-      return await db.select().from(orders).orderBy(orders.createdAt);
+
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw new Error(error.message);
+
+      return data.map(order => ({
+        ...order,
+        orderId: order.order_id,
+        customerEmail: order.customer_email,
+        customerWhatsapp: order.customer_whatsapp,
+        packageId: order.package_id,
+        originalPrice: order.original_price,
+        finalPrice: order.final_price,
+        promoCode: order.promo_code,
+        paymentStatus: order.payment_status,
+        paymentProof: order.payment_proof,
+        inviteStatus: order.invite_status,
+        invitedAt: order.invited_at,
+        createdAt: order.created_at,
+        updatedAt: order.updated_at,
+      }));
     }),
 
   updateOrderPayment: publicProcedure
@@ -71,13 +92,15 @@ export const adminRouter = router({
     .mutation(async ({ input }) => {
       verifyAdminToken(input.token);
 
-      await db
-        .update(orders)
-        .set({
-          paymentStatus: input.paymentStatus,
-          updatedAt: new Date(),
+      const { error } = await supabase
+        .from('orders')
+        .update({
+          payment_status: input.paymentStatus,
+          updated_at: new Date().toISOString(),
         })
-        .where(eq(orders.orderId, input.orderId));
+        .eq('order_id', input.orderId);
+
+      if (error) throw new Error(error.message);
 
       return { success: true };
     }),
@@ -94,15 +117,17 @@ export const adminRouter = router({
     .mutation(async ({ input }) => {
       verifyAdminToken(input.token);
 
-      await db
-        .update(orders)
-        .set({
-          inviteStatus: input.inviteStatus,
-          invitedAt: input.inviteStatus === 'success' ? new Date() : null,
-          cookieAdminEmail: input.cookieAdminEmail || null,
-          updatedAt: new Date(),
+      const { error } = await supabase
+        .from('orders')
+        .update({
+          invite_status: input.inviteStatus,
+          invited_at: input.inviteStatus === 'success' ? new Date().toISOString() : null,
+          cookie_admin_email: input.cookieAdminEmail || null,
+          updated_at: new Date().toISOString(),
         })
-        .where(eq(orders.orderId, input.orderId));
+        .eq('order_id', input.orderId);
+
+      if (error) throw new Error(error.message);
 
       return { success: true };
     }),
@@ -111,7 +136,13 @@ export const adminRouter = router({
     .input(z.object({ token: z.string() }))
     .query(async ({ input }) => {
       verifyAdminToken(input.token);
-      return await db.select().from(packages);
+
+      const { data, error } = await supabase
+        .from('packages')
+        .select('*');
+
+      if (error) throw new Error(error.message);
+      return data;
     }),
 
   updatePackage: publicProcedure
@@ -134,13 +165,18 @@ export const adminRouter = router({
       const updateData: any = {};
       if (input.name) updateData.name = input.name;
       if (input.price) updateData.price = input.price;
-      if (input.originalPrice) updateData.originalPrice = input.originalPrice;
+      if (input.originalPrice) updateData.original_price = input.originalPrice;
       if (input.duration) updateData.duration = input.duration;
       if (input.features) updateData.features = input.features;
-      if (input.isPopular !== undefined) updateData.isPopular = input.isPopular;
-      if (input.isActive !== undefined) updateData.isActive = input.isActive;
+      if (input.isPopular !== undefined) updateData.is_popular = input.isPopular;
+      if (input.isActive !== undefined) updateData.is_active = input.isActive;
 
-      await db.update(packages).set(updateData).where(eq(packages.id, input.id));
+      const { error } = await supabase
+        .from('packages')
+        .update(updateData)
+        .eq('id', input.id);
+
+      if (error) throw new Error(error.message);
 
       return { success: true };
     }),
@@ -149,7 +185,13 @@ export const adminRouter = router({
     .input(z.object({ token: z.string() }))
     .query(async ({ input }) => {
       verifyAdminToken(input.token);
-      return await db.select().from(cookies);
+
+      const { data, error } = await supabase
+        .from('cookies')
+        .select('*');
+
+      if (error) throw new Error(error.message);
+      return data;
     }),
 
   addCookie: publicProcedure
@@ -165,16 +207,19 @@ export const adminRouter = router({
     .mutation(async ({ input }) => {
       verifyAdminToken(input.token);
 
-      const [cookie] = await db
-        .insert(cookies)
-        .values({
-          cookieName: input.cookieName,
-          adminEmail: input.adminEmail,
-          cookieData: input.cookieData,
-          expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
-          isActive: true,
+      const { data: cookie, error } = await supabase
+        .from('cookies')
+        .insert({
+          cookie_name: input.cookieName,
+          admin_email: input.adminEmail,
+          cookie_data: input.cookieData,
+          expires_at: input.expiresAt || null,
+          is_active: true,
         })
-        .returning();
+        .select()
+        .single();
+
+      if (error) throw new Error(error.message);
 
       return cookie;
     }),
@@ -190,10 +235,12 @@ export const adminRouter = router({
     .mutation(async ({ input }) => {
       verifyAdminToken(input.token);
 
-      await db
-        .update(cookies)
-        .set({ isActive: input.isActive })
-        .where(eq(cookies.id, input.id));
+      const { error } = await supabase
+        .from('cookies')
+        .update({ is_active: input.isActive })
+        .eq('id', input.id);
+
+      if (error) throw new Error(error.message);
 
       return { success: true };
     }),
@@ -202,7 +249,13 @@ export const adminRouter = router({
     .input(z.object({ token: z.string() }))
     .query(async ({ input }) => {
       verifyAdminToken(input.token);
-      return await db.select().from(promoCodes);
+
+      const { data, error } = await supabase
+        .from('promo_codes')
+        .select('*');
+
+      if (error) throw new Error(error.message);
+      return data;
     }),
 
   addPromoCode: publicProcedure
@@ -219,19 +272,22 @@ export const adminRouter = router({
     .mutation(async ({ input }) => {
       verifyAdminToken(input.token);
 
-      const [promo] = await db
-        .insert(promoCodes)
-        .values({
+      const { data: promo, error } = await supabase
+        .from('promo_codes')
+        .insert({
           code: input.code,
-          discountType: input.discountType,
-          discountValue: input.discountValue,
-          maxUsage: input.maxUsage,
-          currentUsage: 0,
-          validFrom: new Date(),
-          validUntil: input.validUntil ? new Date(input.validUntil) : null,
-          isActive: true,
+          discount_type: input.discountType,
+          discount_value: input.discountValue,
+          max_usage: input.maxUsage,
+          current_usage: 0,
+          valid_from: new Date().toISOString(),
+          valid_until: input.validUntil || null,
+          is_active: true,
         })
-        .returning();
+        .select()
+        .single();
+
+      if (error) throw new Error(error.message);
 
       return promo;
     }),
@@ -240,7 +296,14 @@ export const adminRouter = router({
     .input(z.object({ token: z.string() }))
     .query(async ({ input }) => {
       verifyAdminToken(input.token);
-      return await db.select().from(ratings).orderBy(ratings.createdAt);
+
+      const { data, error } = await supabase
+        .from('ratings')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw new Error(error.message);
+      return data;
     }),
 
   approveRating: publicProcedure
@@ -254,10 +317,12 @@ export const adminRouter = router({
     .mutation(async ({ input }) => {
       verifyAdminToken(input.token);
 
-      await db
-        .update(ratings)
-        .set({ isApproved: input.isApproved })
-        .where(eq(ratings.id, input.id));
+      const { error } = await supabase
+        .from('ratings')
+        .update({ is_approved: input.isApproved })
+        .eq('id', input.id);
+
+      if (error) throw new Error(error.message);
 
       return { success: true };
     }),

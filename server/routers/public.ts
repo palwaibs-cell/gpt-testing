@@ -1,53 +1,62 @@
 import { z } from 'zod';
 import { publicProcedure, router } from '../trpc';
-import { db } from '../db';
-import { packages, orders, promoCodes, ratings } from '../../shared/schema';
-import { eq, and } from 'drizzle-orm';
+import { supabase } from '../supabase';
 import { nanoid } from 'nanoid';
 
 export const publicRouter = router({
   getPackages: publicProcedure.query(async () => {
-    return await db.select().from(packages).where(eq(packages.isActive, true));
+    const { data, error } = await supabase
+      .from('packages')
+      .select('*')
+      .eq('is_active', true);
+
+    if (error) throw new Error(error.message);
+
+    return data.map(pkg => ({
+      ...pkg,
+      isActive: pkg.is_active,
+      isPopular: pkg.is_popular,
+      packageId: pkg.package_id,
+      originalPrice: pkg.original_price,
+      createdAt: pkg.created_at
+    }));
   }),
 
   getPackage: publicProcedure
     .input(z.object({ packageId: z.string() }))
     .query(async ({ input }) => {
-      const [pkg] = await db
-        .select()
-        .from(packages)
-        .where(eq(packages.packageId, input.packageId))
-        .limit(1);
-      return pkg;
+      const { data, error } = await supabase
+        .from('packages')
+        .select('*')
+        .eq('package_id', input.packageId)
+        .single();
+
+      if (error) throw new Error(error.message);
+      return data;
     }),
 
   validatePromoCode: publicProcedure
     .input(z.object({ code: z.string() }))
     .mutation(async ({ input }) => {
-      const [promo] = await db
-        .select()
-        .from(promoCodes)
-        .where(
-          and(
-            eq(promoCodes.code, input.code),
-            eq(promoCodes.isActive, true)
-          )
-        )
-        .limit(1);
+      const { data, error } = await supabase
+        .from('promo_codes')
+        .select('*')
+        .eq('code', input.code)
+        .eq('is_active', true)
+        .maybeSingle();
 
-      if (!promo) {
-        throw new Error('Kode promo tidak valid');
-      }
+      if (error) throw new Error(error.message);
+      if (!data) throw new Error('Kode promo tidak valid');
 
-      if (promo.maxUsage > 0 && promo.currentUsage >= promo.maxUsage) {
+      if (data.max_usage > 0 && data.current_usage >= data.max_usage) {
         throw new Error('Kode promo sudah mencapai batas penggunaan');
       }
 
-      if (promo.validUntil && new Date(promo.validUntil) < new Date()) {
+      if (data.valid_until && new Date(data.valid_until) < new Date()) {
         throw new Error('Kode promo sudah kadaluarsa');
       }
 
-      return promo;
+      return data;
     }),
 
   createOrder: publicProcedure
@@ -60,13 +69,13 @@ export const publicRouter = router({
       })
     )
     .mutation(async ({ input }) => {
-      const [pkg] = await db
-        .select()
-        .from(packages)
-        .where(eq(packages.packageId, input.packageId))
-        .limit(1);
+      const { data: pkg, error: pkgError } = await supabase
+        .from('packages')
+        .select('*')
+        .eq('package_id', input.packageId)
+        .single();
 
-      if (!pkg) {
+      if (pkgError || !pkg) {
         throw new Error('Paket tidak ditemukan');
       }
 
@@ -74,57 +83,90 @@ export const publicRouter = router({
       let finalPrice = pkg.price;
 
       if (input.promoCode) {
-        const [promo] = await db
-          .select()
-          .from(promoCodes)
-          .where(eq(promoCodes.code, input.promoCode))
-          .limit(1);
+        const { data: promo, error: promoError } = await supabase
+          .from('promo_codes')
+          .select('*')
+          .eq('code', input.promoCode)
+          .maybeSingle();
 
-        if (promo && promo.isActive) {
-          if (promo.discountType === 'fixed') {
-            discount = promo.discountValue;
-          } else if (promo.discountType === 'percentage') {
-            discount = Math.floor((pkg.price * promo.discountValue) / 100);
+        if (!promoError && promo && promo.is_active) {
+          if (promo.discount_type === 'fixed') {
+            discount = promo.discount_value;
+          } else if (promo.discount_type === 'percentage') {
+            discount = Math.floor((pkg.price * promo.discount_value) / 100);
           }
           finalPrice = pkg.price - discount;
 
-          await db
-            .update(promoCodes)
-            .set({ currentUsage: promo.currentUsage + 1 })
-            .where(eq(promoCodes.id, promo.id));
+          await supabase
+            .from('promo_codes')
+            .update({ current_usage: promo.current_usage + 1 })
+            .eq('id', promo.id);
         }
       }
 
       const orderId = `ORD-${nanoid(10).toUpperCase()}`;
 
-      const [order] = await db
-        .insert(orders)
-        .values({
-          orderId,
-          customerEmail: input.customerEmail,
-          customerWhatsapp: input.customerWhatsapp,
-          packageId: pkg.id,
-          originalPrice: pkg.price,
+      const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .insert({
+          order_id: orderId,
+          customer_email: input.customerEmail,
+          customer_whatsapp: input.customerWhatsapp,
+          package_id: pkg.id,
+          original_price: pkg.price,
           discount,
-          finalPrice,
-          promoCode: input.promoCode || null,
-          paymentStatus: 'pending',
-          inviteStatus: 'pending',
+          final_price: finalPrice,
+          promo_code: input.promoCode || null,
+          payment_status: 'pending',
+          invite_status: 'pending',
         })
-        .returning();
+        .select()
+        .single();
 
-      return order;
+      if (orderError) throw new Error(orderError.message);
+
+      return {
+        ...order,
+        orderId: order.order_id,
+        customerEmail: order.customer_email,
+        customerWhatsapp: order.customer_whatsapp,
+        packageId: order.package_id,
+        originalPrice: order.original_price,
+        finalPrice: order.final_price,
+        promoCode: order.promo_code,
+        paymentStatus: order.payment_status,
+        inviteStatus: order.invite_status,
+        createdAt: order.created_at,
+      };
     }),
 
   getOrder: publicProcedure
     .input(z.object({ orderId: z.string() }))
     .query(async ({ input }) => {
-      const [order] = await db
-        .select()
-        .from(orders)
-        .where(eq(orders.orderId, input.orderId))
-        .limit(1);
-      return order;
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('order_id', input.orderId)
+        .single();
+
+      if (error) return null;
+
+      return {
+        ...data,
+        orderId: data.order_id,
+        customerEmail: data.customer_email,
+        customerWhatsapp: data.customer_whatsapp,
+        packageId: data.package_id,
+        originalPrice: data.original_price,
+        finalPrice: data.final_price,
+        promoCode: data.promo_code,
+        paymentStatus: data.payment_status,
+        paymentProof: data.payment_proof,
+        inviteStatus: data.invite_status,
+        invitedAt: data.invited_at,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at,
+      };
     }),
 
   submitRating: publicProcedure
@@ -139,42 +181,48 @@ export const publicRouter = router({
       })
     )
     .mutation(async ({ input }) => {
-      const [order] = await db
-        .select()
-        .from(orders)
-        .where(eq(orders.orderId, input.orderId))
-        .limit(1);
+      const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('order_id', input.orderId)
+        .single();
 
-      if (!order) {
+      if (orderError || !order) {
         throw new Error('Order tidak ditemukan');
       }
 
-      if (order.customerEmail !== input.customerEmail) {
+      if (order.customer_email !== input.customerEmail) {
         throw new Error('Email tidak sesuai dengan order');
       }
 
-      const [rating] = await db
-        .insert(ratings)
-        .values({
-          orderId: input.orderId,
-          customerEmail: input.customerEmail,
-          customerRole: input.customerRole || null,
-          customerWhatsapp: input.customerWhatsapp || null,
+      const { data: rating, error: ratingError } = await supabase
+        .from('ratings')
+        .insert({
+          order_id: input.orderId,
+          customer_email: input.customerEmail,
+          customer_role: input.customerRole || null,
+          customer_whatsapp: input.customerWhatsapp || null,
           rating: input.rating,
           review: input.review || null,
-          isApproved: false,
-          voucherSent: false,
+          is_approved: false,
+          voucher_sent: false,
         })
-        .returning();
+        .select()
+        .single();
+
+      if (ratingError) throw new Error(ratingError.message);
 
       return rating;
     }),
 
   getApprovedRatings: publicProcedure.query(async () => {
-    return await db
-      .select()
-      .from(ratings)
-      .where(eq(ratings.isApproved, true))
-      .orderBy(ratings.createdAt);
+    const { data, error } = await supabase
+      .from('ratings')
+      .select('*')
+      .eq('is_approved', true)
+      .order('created_at', { ascending: false });
+
+    if (error) throw new Error(error.message);
+    return data;
   }),
 });
