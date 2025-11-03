@@ -6,7 +6,13 @@ import { defineConfig } from "vite";
 import { vitePluginManusRuntime } from "vite-plugin-manus-runtime";
 
 
-const plugins = [react(), tailwindcss(), vitePluginManusRuntime()];
+const plugins = [
+  react(),
+  tailwindcss(),
+  vitePluginManusRuntime({
+    serverEntry: "server/_core/index.ts",
+  })
+];
 
 export default defineConfig({
   plugins,
